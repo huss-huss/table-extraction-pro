@@ -1,0 +1,25 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        # "fallback" (Camelot + Tabula), "ml,fallback" (adds TATR), or "" (base only)
+        EXTRAS: ${TEP_EXTRAS:-fallback}
+    image: table-extraction-pro:${TEP_EXTRAS_TAG:-fallback}
+    ports:
+      - "${TEP_PORT:-8000}:8000"
+    environment:
+      TEP_MAX_UPLOAD_MB: ${TEP_MAX_UPLOAD_MB:-20}
+      TEP_MAX_BATCH_FILES: ${TEP_MAX_BATCH_FILES:-10}
+      TEP_DEFAULT_ENGINE: ${TEP_DEFAULT_ENGINE:-auto}
+      TEP_CORS_ORIGINS: ${TEP_CORS_ORIGINS:-}
+    volumes:
+      # TATR weights are downloaded on first use; keep them across restarts.
+      - hf-cache:/home/app/.cache/huggingface
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
