@@ -1,0 +1,4 @@
+Metric,Value
+Latency p50 (ms),41
+Latency p95 (ms),118
+Error rate (%),0.42

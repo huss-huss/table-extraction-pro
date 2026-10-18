@@ -69,6 +69,10 @@ markers = [
     "slow: long-running test (deselected by default)",
 ]
 addopts = "-m 'not ml and not slow'"
+filterwarnings = [
+    # PyMuPDF's SWIG bindings on Python 3.12+
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 110
