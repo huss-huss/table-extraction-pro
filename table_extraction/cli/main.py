@@ -1,5 +1,5 @@
 """
-Main CLI interface for table extraction.
+Command-line interface for table extraction.
 """
 
 import logging
@@ -8,211 +8,178 @@ from typing import List
 
 import click
 
+from .. import __version__
+from .._deps import MissingDependencyError, available_backends
+from ..engine import ENGINES, SUPPORTED_EXTENSIONS, extract_tables
 from ..export.exporter import TableExporter
-from ..extraction.pipeline import TableExtractionPipeline
-from ..parsers.parser_comparator import ParserComparator
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("table_extraction.cli")
+
+FORMATS = click.Choice(["csv", "json", "html", "excel"])
+CONFIDENCE = click.FloatRange(0.0, 1.0)
+
+
+def _engine(engine: str, use_fallback: bool) -> str:
+    return "fallback" if use_fallback else engine
+
+
+def _fail(exc: Exception) -> click.ClickException:
+    return click.ClickException(str(exc))
 
 
 @click.group()
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-@click.option("--quiet", "-q", is_flag=True, help="Suppress output except errors")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
+@click.option("--quiet", "-q", is_flag=True, help="Only log errors")
 def cli(verbose: bool, quiet: bool):
-    """Table Extraction Pro - Extract tables from PDFs and images."""
-    if verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    elif quiet:
-        logging.getLogger().setLevel(logging.ERROR)
+    """Table Extraction Pro - extract tables from PDFs and images."""
+    level = logging.DEBUG if verbose else logging.ERROR if quiet else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger().setLevel(level)
+
+
+def engine_options(f):
+    f = click.option(
+        "--use-fallback", is_flag=True, help="Shortcut for --engine fallback (kept for compatibility)"
+    )(f)
+    f = click.option(
+        "--engine",
+        "-e",
+        type=click.Choice(ENGINES),
+        default="auto",
+        show_default=True,
+        help="tatr: Table Transformer; fallback: Camelot+Tabula; auto: everything installed, compared",
+    )(f)
+    f = click.option("--confidence", "-c", type=CONFIDENCE, default=0.5, show_default=True)(f)
+    return f
 
 
 @cli.command()
-@click.option("--input", "-i", required=True, help="Input file path (PDF or image)")
-@click.option("--output", "-o", required=True, help="Output directory path")
-@click.option(
-    "--formats",
-    "-f",
-    multiple=True,
-    type=click.Choice(["csv", "json", "html", "excel"]),
-    default=["csv", "json"],
-    help="Output formats",
-)
-@click.option("--confidence", "-c", default=0.5, help="Confidence threshold (0.0-1.0)")
-@click.option("--use-fallback", is_flag=True, help="Use fallback parsers (Camelot, Tabula)")
+@click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "-o", required=True, type=click.Path(file_okay=False), help="Output directory")
+@click.option("--formats", "-f", multiple=True, type=FORMATS, default=["csv", "json"], show_default=True)
 @click.option("--include-metadata", is_flag=True, help="Include metadata in output")
+@engine_options
 def extract(
-    input: str, output: str, formats: List[str], confidence: float, use_fallback: bool, include_metadata: bool
+    input_path: str,
+    output: str,
+    formats: List[str],
+    include_metadata: bool,
+    confidence: float,
+    engine: str,
+    use_fallback: bool,
 ):
     """Extract tables from a single file."""
     try:
-        logger.info(f"Extracting tables from: {input}")
-
-        # Initialize pipeline
-        pipeline = TableExtractionPipeline(confidence_threshold=confidence)
-
-        # Extract tables
-        if use_fallback:
-            # Use parser comparator for best results
-            comparator = ParserComparator()
-            tables = comparator.compare_parsers(input)
-        else:
-            # Use TATR only
-            tables = pipeline.extract_from_file(input)
-
-        if not tables:
-            logger.warning("No tables found in the document")
-            return
-
-        # Export tables
-        exporter = TableExporter(output)
-        input_stem = Path(input).stem
-        results = exporter.export_tables(tables, input_stem, list(formats), include_metadata)
-
-        logger.info(f"Successfully extracted {len(tables)} table(s)")
-        for format_name, output_path in results.items():
-            logger.info(f"Exported to {format_name}: {output_path}")
-
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}")
-        raise click.ClickException(str(e))
+        tables = extract_tables(input_path, _engine(engine, use_fallback), confidence)
+    except (MissingDependencyError, ValueError, FileNotFoundError) as e:
+        raise _fail(e) from e
+    if not tables:
+        click.echo("No tables found.")
+        return
+    results = TableExporter(output).export_tables(
+        tables, Path(input_path).stem, list(formats), include_metadata
+    )
+    click.echo(f"Extracted {len(tables)} table(s) from {input_path}")
+    for fmt, path in results.items():
+        click.echo(f"  {fmt}: {path}")
 
 
 @cli.command()
-@click.option("--input-folder", "-i", required=True, help="Input folder path")
-@click.option("--output-folder", "-o", required=True, help="Output folder path")
-@click.option(
-    "--formats",
-    "-f",
-    multiple=True,
-    type=click.Choice(["csv", "json", "html", "excel"]),
-    default=["csv", "json"],
-    help="Output formats",
-)
-@click.option("--confidence", "-c", default=0.5, help="Confidence threshold (0.0-1.0)")
-@click.option("--use-fallback", is_flag=True, help="Use fallback parsers")
+@click.option("--input-folder", "-i", required=True, type=click.Path(exists=True, file_okay=False))
+@click.option("--output-folder", "-o", required=True, type=click.Path(file_okay=False))
+@click.option("--formats", "-f", multiple=True, type=FORMATS, default=["csv", "json"], show_default=True)
 @click.option("--include-metadata", is_flag=True, help="Include metadata in output")
 @click.option(
     "--file-extensions",
     multiple=True,
-    default=[".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff"],
-    help="File extensions to process",
+    default=list(SUPPORTED_EXTENSIONS),
+    show_default=True,
+    help="File extensions to process (case-insensitive)",
 )
+@engine_options
 def batch(
     input_folder: str,
     output_folder: str,
     formats: List[str],
-    confidence: float,
-    use_fallback: bool,
     include_metadata: bool,
     file_extensions: List[str],
+    confidence: float,
+    engine: str,
+    use_fallback: bool,
 ):
-    """Batch extract tables from multiple files."""
-    try:
-        input_path = Path(input_folder)
-        output_path = Path(output_folder)
+    """Extract tables from every matching file in a folder."""
+    wanted = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in file_extensions}
+    files = sorted(p for p in Path(input_folder).iterdir() if p.is_file() and p.suffix.lower() in wanted)
+    if not files:
+        click.echo(f"No files with extensions {sorted(wanted)} in {input_folder}")
+        return
 
-        if not input_path.exists():
-            raise click.ClickException(f"Input folder does not exist: {input_folder}")
-
-        # Find files to process
-        files_to_process = []
-        for ext in file_extensions:
-            files_to_process.extend(input_path.glob(f"*{ext}"))
-            files_to_process.extend(input_path.glob(f"*{ext.upper()}"))
-
-        if not files_to_process:
-            logger.warning(f"No files found with extensions: {file_extensions}")
-            return
-
-        logger.info(f"Found {len(files_to_process)} files to process")
-
-        # Initialize pipeline
-        pipeline = TableExtractionPipeline(confidence_threshold=confidence)
-        comparator = ParserComparator() if use_fallback else None
-
-        # Process files
-        batch_results = {}
-        for file_path in files_to_process:
+    engine = _engine(engine, use_fallback)
+    batch_results = {}
+    failures = 0
+    with click.progressbar(files, label="Extracting") as bar:
+        for path in bar:
             try:
-                logger.info(f"Processing: {file_path}")
-
-                if use_fallback and comparator:
-                    tables = comparator.compare_parsers(str(file_path))
-                else:
-                    tables = pipeline.extract_from_file(file_path)
-
-                batch_results[str(file_path)] = tables
-                logger.info(f"Found {len(tables)} table(s) in {file_path.name}")
-
+                batch_results[str(path)] = extract_tables(path, engine, confidence)
+            except MissingDependencyError as e:
+                raise _fail(e) from e
             except Exception as e:
-                logger.error(f"Failed to process {file_path}: {e}")
-                batch_results[str(file_path)] = []
+                logger.error(f"Failed to process {path}: {e}")
+                batch_results[str(path)] = []
+                failures += 1
 
-        # Export results
-        exporter = TableExporter(output_path)
-        export_results = exporter.export_batch(batch_results, list(formats), include_metadata)
-
-        # Create summary report
-        summary_path = exporter.create_summary_report(batch_results)
-
-        # Print summary
-        total_tables = sum(len(tables) for tables in batch_results.values())
-        files_with_tables = sum(1 for tables in batch_results.values() if tables)
-
-        logger.info("Batch processing completed:")
-        logger.info(f"  - Files processed: {len(files_to_process)}")
-        logger.info(f"  - Files with tables: {files_with_tables}")
-        logger.info(f"  - Total tables extracted: {total_tables}")
-        logger.info(f"  - Summary report: {summary_path}")
-
-    except Exception as e:
-        logger.error(f"Batch processing failed: {e}")
-        raise click.ClickException(str(e))
+    exporter = TableExporter(output_folder)
+    exporter.export_batch(batch_results, list(formats), include_metadata)
+    summary = exporter.create_summary_report(batch_results)
+    total = sum(len(t) for t in batch_results.values())
+    with_tables = sum(1 for t in batch_results.values() if t)
+    click.echo(
+        f"Processed {len(files)} file(s): {with_tables} with tables, {total} table(s), {failures} failure(s)"
+    )
+    click.echo(f"Summary: {summary}")
 
 
 @cli.command()
-@click.option("--input", "-i", required=True, help="Input file path")
-@click.option("--output", "-o", required=True, help="Output file path")
-@click.option(
-    "--format", "-f", type=click.Choice(["csv", "json", "html", "excel"]), default="csv", help="Output format"
-)
-@click.option("--confidence", "-c", default=0.5, help="Confidence threshold")
-def quick(input: str, output: str, format: str, confidence: float):
-    """Quick extraction with minimal options."""
+@click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "-o", required=True, type=click.Path(dir_okay=False), help="Output file")
+@click.option("--format", "-f", "fmt", type=FORMATS, default="csv", show_default=True)
+@engine_options
+def quick(input_path: str, output: str, fmt: str, confidence: float, engine: str, use_fallback: bool):
+    """Extract and write a single output file without metadata."""
     try:
-        logger.info(f"Quick extraction: {input} -> {output}")
+        tables = extract_tables(input_path, _engine(engine, use_fallback), confidence)
+    except (MissingDependencyError, ValueError, FileNotFoundError) as e:
+        raise _fail(e) from e
+    if not tables:
+        click.echo("No tables found.")
+        return
+    output_path = Path(output)
+    results = TableExporter(output_path.parent).export_tables(
+        tables, output_path.stem, [fmt], include_metadata=False
+    )
+    click.echo(f"Extracted {len(tables)} table(s) to {results[fmt]}")
 
-        # Initialize pipeline
-        pipeline = TableExtractionPipeline(confidence_threshold=confidence)
 
-        # Extract tables
-        tables = pipeline.extract_from_file(input)
+@cli.command()
+def backends():
+    """Show which extraction backends are installed."""
+    for name, ok in available_backends().items():
+        click.echo(f"{name:8s} {'available' if ok else 'missing'}")
 
-        if not tables:
-            logger.warning("No tables found")
-            return
 
-        # Export to single file
-        output_path = Path(output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8000, show_default=True, type=int)
+def serve(host: str, port: int):
+    """Run the REST API with uvicorn."""
+    import uvicorn
 
-        exporter = TableExporter(output_path.parent)
-        results = exporter.export_tables(tables, output_path.stem, [format], include_metadata=False)
-
-        logger.info(f"Extracted {len(tables)} table(s) to {output}")
-
-    except Exception as e:
-        logger.error(f"Quick extraction failed: {e}")
-        raise click.ClickException(str(e))
+    uvicorn.run("table_extraction.api.main:app", host=host, port=port)
 
 
 @cli.command()
 def version():
     """Show version information."""
-    from .. import __version__
-
     click.echo(f"Table Extraction Pro v{__version__}")
 
 
