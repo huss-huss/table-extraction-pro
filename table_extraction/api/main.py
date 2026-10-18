@@ -120,6 +120,9 @@ async def extract_tables(
         try:
             # Save uploaded file
             shutil.copyfileobj(file.file, tmp_file)
+            # Extraction re-opens the file by name; flush the buffer first or
+            # small uploads are read as empty/truncated files.
+            tmp_file.flush()
             tmp_file_path = tmp_file.name
 
             logger.info(f"Processing file: {file.filename}")
@@ -232,6 +235,7 @@ async def extract_tables_batch(
                 try:
                     # Save uploaded file
                     shutil.copyfileobj(file.file, tmp_file)
+                    tmp_file.flush()
                     tmp_file_path = tmp_file.name
 
                     # Extract tables
