@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
-Script to run the Table Extraction Pro API server.
+Run the Table Extraction Pro API (equivalent to `table-extract serve`).
+
+Set TEP_RELOAD=1 for auto-reload during development.
 """
+
+import os
 
 import uvicorn
 
-from table_extraction.api.main import app
-
 if __name__ == "__main__":
-    print("Starting Table Extraction Pro API server...")
-    print("API will be available at: http://localhost:8000")
-    print("API documentation at: http://localhost:8000/docs")
-
     uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        reload=True,  # Enable auto-reload for development
-        log_level="info",
+        "table_extraction.api.main:app",
+        host=os.getenv("TEP_HOST", "127.0.0.1"),
+        port=int(os.getenv("TEP_PORT", "8000")),
+        reload=os.getenv("TEP_RELOAD") == "1",
     )

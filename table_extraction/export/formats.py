@@ -314,3 +314,27 @@ def _generate_html_content(tables: List[Dict[str, Any]], include_metadata: bool,
     """
 
     return html
+
+
+def table_to_html(table: Dict[str, Any]) -> str:
+    """A bare ``<table>`` fragment for one table, with escaped cell text."""
+    rows = table.get("data") or []
+    if not rows:
+        return "<table></table>"
+    out = ["<table>", "  <tbody>"]
+    for row in rows:
+        cells = "".join(f"<td>{_html.escape(_cell_text(c))}</td>" for c in row)
+        out.append(f"    <tr>{cells}</tr>")
+    out += ["  </tbody>", "</table>"]
+    return "\n".join(out)
+
+
+def table_to_csv(table: Dict[str, Any]) -> str:
+    """CSV text for one table."""
+    import io
+
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows(
+        [[_cell_text(c) for c in row] for row in table.get("data") or []]
+    )
+    return buf.getvalue()
