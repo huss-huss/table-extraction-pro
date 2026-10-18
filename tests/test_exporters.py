@@ -25,8 +25,10 @@ def test_csv_metadata_header_for_tatr_table(tmp_path):
     export_to_csv([make_table(INVOICE, confidence=0.876)], out, include_metadata=True)
     rows = read_csv(out)
     assert rows[0] == ["# Table ID: 1"]
-    assert rows[2] == ["# Confidence: 0.876"]
-    assert rows[5:] == INVOICE
+    assert rows[2] == ["# Parser: tatr"]
+    assert rows[3] == ["# Confidence: 0.876"]
+    assert rows[4] == ["# Rows: 5, Columns: 4"]
+    assert rows[6:] == INVOICE
 
 
 def test_json_export(tmp_path):
@@ -61,3 +63,19 @@ def test_excel_export_one_sheet_per_table(tmp_path):
 def test_exporter_rejects_unknown_format(tmp_path):
     with pytest.raises(ValueError, match="Unsupported formats"):
         TableExporter(tmp_path).export_tables([make_table(INVOICE)], "t", ["pdf"])
+
+
+@pytest.mark.parametrize("fmt", ["csv", "json", "html", "excel"])
+def test_fallback_tables_export_with_metadata(tmp_path, fmt):
+    """Camelot/Tabula tables carry confidence in `detection`, not `metadata`."""
+    table = make_table(INVOICE, parser="camelot", confidence=0.97)
+    assert "confidence" not in table["metadata"]
+    paths = TableExporter(tmp_path).export_tables([table], "t", [fmt], include_metadata=True)
+    assert paths[fmt].exists()
+
+
+def test_summary_report_with_fallback_tables(tmp_path):
+    table = make_table(INVOICE, parser="tabula", confidence=0.8)
+    path = TableExporter(tmp_path).create_summary_report({"a.pdf": [table]})
+    summary = json.loads(path.read_text())
+    assert summary["file_details"]["a.pdf"]["tables"][0]["confidence"] == 0.8

@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from .formats import export_to_csv, export_to_excel, export_to_html, export_to_json
+from .formats import export_to_csv, export_to_excel, export_to_html, export_to_json, table_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +202,8 @@ class TableExporter:
                 table_info = {
                     "table_id": table["table_id"],
                     "page_number": table["page_number"],
-                    "confidence": table["metadata"]["confidence"],
+                    "parser": table.get("metadata", {}).get("parser"),
+                    "confidence": table_confidence(table),
                     "num_rows": table["structure"]["num_rows"],
                     "num_columns": table["structure"]["num_columns"],
                 }

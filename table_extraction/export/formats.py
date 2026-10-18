@@ -6,11 +6,34 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def table_confidence(table: Dict[str, Any]) -> Optional[float]:
+    """Confidence of a table regardless of which parser produced it.
+
+    TATR tables store it in ``metadata``; Camelot/Tabula tables only in
+    ``detection``.
+    """
+    for source in (table.get("metadata", {}), table.get("detection", {})):
+        value = source.get("confidence")
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _fmt_confidence(table: Dict[str, Any]) -> str:
+    value = table_confidence(table)
+    return "n/a" if value is None else f"{value:.3f}"
+
+
+def _shape(table: Dict[str, Any]):
+    data = table.get("data") or []
+    return len(data), max((len(r) for r in data), default=0)
 
 
 def export_to_csv(
@@ -39,8 +62,10 @@ def export_to_csv(
                 metadata = table["metadata"]
                 writer.writerow([f"# Table ID: {table['table_id']}"])
                 writer.writerow([f"# Page: {table['page_number']}"])
-                writer.writerow([f"# Confidence: {metadata['confidence']:.3f}"])
-                writer.writerow([f"# Rows: {metadata['num_rows']}, Columns: {metadata['num_columns']}"])
+                rows, cols = _shape(table)
+                writer.writerow([f"# Parser: {metadata.get('parser', 'unknown')}"])
+                writer.writerow([f"# Confidence: {_fmt_confidence(table)}"])
+                writer.writerow([f"# Rows: {rows}, Columns: {cols}"])
                 writer.writerow([])  # Empty row
 
             # Write table data
@@ -163,7 +188,7 @@ def export_to_excel(
                     "Page": table["page_number"],
                     "Rows": table["structure"]["num_rows"],
                     "Columns": table["structure"]["num_columns"],
-                    "Confidence": table["metadata"]["confidence"],
+                    "Confidence": table_confidence(table),
                 }
             )
 
@@ -246,8 +271,9 @@ def _generate_html_content(tables: List[Dict[str, Any]], include_metadata: bool,
             metadata = table["metadata"]
             html += f"""
             <div class="metadata">
-                Confidence: <span class="confidence">{metadata["confidence"]:.3f}</span> | 
-                Rows: {metadata["num_rows"]} | Columns: {metadata["num_columns"]}
+                Parser: {metadata.get("parser", "unknown")} |
+                Confidence: <span class="confidence">{_fmt_confidence(table)}</span> |
+                Rows: {_shape(table)[0]} | Columns: {_shape(table)[1]}
             </div>
             """
 
