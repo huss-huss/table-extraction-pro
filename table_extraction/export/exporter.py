@@ -64,7 +64,7 @@ class TableExporter:
                 output_path = self._get_output_path(filename, format_name)
 
                 if format_name == "csv":
-                    export_to_csv(tables, output_path, include_metadata)
+                    output_path = export_to_csv(tables, output_path, include_metadata)
                 elif format_name == "json":
                     export_to_json(tables, output_path, include_metadata, kwargs.get("pretty_print", True))
                 elif format_name == "html":

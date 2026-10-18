@@ -89,3 +89,24 @@ def test_html_export_escapes_cell_text(tmp_path):
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "a &amp; b &lt; c" in html
+
+
+def test_csv_multiple_tables_written_to_directory(tmp_path):
+    tables = [make_table(INVOICE, table_id=1), make_table(STAFF, table_id=1, page=1, parser="camelot")]
+    paths = TableExporter(tmp_path).export_tables(tables, "report", ["csv"], include_metadata=False)
+    out_dir = paths["csv"]
+    assert out_dir == tmp_path / "report"
+    assert out_dir.is_dir()
+    assert not (tmp_path / "report.csv").exists()
+    files = sorted(p.name for p in out_dir.iterdir())
+    assert files == ["table_1_page_1.csv", "table_2_page_1.csv"]
+    assert read_csv(out_dir / "table_1_page_1.csv") == INVOICE
+    assert read_csv(out_dir / "table_2_page_1.csv") == STAFF
+
+
+def test_excel_tables_with_duplicate_ids_get_separate_sheets(tmp_path):
+    tables = [make_table(INVOICE, table_id=1), make_table(STAFF, table_id=1)]
+    path = TableExporter(tmp_path).export_tables(tables, "t", ["xlsx"])["xlsx"]
+    wb = openpyxl.load_workbook(path)
+    assert wb.sheetnames == ["Summary", "Table_1_Page_1", "Table_2_Page_1"]
+    assert wb["Table_2_Page_1"].cell(row=2, column=1).value == "Name"

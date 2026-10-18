@@ -78,14 +78,17 @@ def export_to_csv(
                 writer.writerow(row)
 
     else:
-        # Multiple tables - create separate files
+        # Multiple tables - one file per table in a directory
+        if output_path.suffix.lower() == ".csv":
+            output_path = output_path.with_suffix("")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        for table in tables:
-            table_file = output_path / f"table_{table['table_id']}_page_{table['page_number']}.csv"
+        for n, table in enumerate(tables, start=1):
+            table_file = output_path / f"table_{n}_page_{table['page_number']}.csv"
             export_to_csv([table], table_file, include_metadata)
 
     logger.info(f"Exported {len(tables)} table(s) to CSV: {output_path}")
+    return output_path
 
 
 def export_to_json(
@@ -201,8 +204,10 @@ def export_to_excel(
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
         # Create individual sheets for each table
-        for table in tables:
-            sheet_name = f"Table_{table['table_id']}_Page_{table['page_number']}"
+        for n, table in enumerate(tables, start=1):
+            # Position-based and <= 31 chars (Excel limit); duplicate names would
+            # silently write two tables into the same sheet.
+            sheet_name = f"Table_{n}_Page_{table['page_number']}"[:31]
 
             # Convert table data to DataFrame
             df = pd.DataFrame(table["data"])
