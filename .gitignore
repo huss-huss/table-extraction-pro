@@ -140,8 +140,8 @@ temp/
 *.bmp
 *.tiff
 
-# Model files (large files)
-models/
+# Model files (large files). Anchored so the table_extraction/models package is not ignored.
+/models/
 *.bin
 *.safetensors
 .cache/
@@ -151,8 +151,7 @@ models/
 .env.production
 secrets.json
 
-# Test files
-test_*.py
+# Scratch files
 demo.py
 create_test_data.py
 extract_without_tatr.py
