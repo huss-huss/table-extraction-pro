@@ -68,7 +68,7 @@ class TATRTableDetector:
         return detections
 
     @staticmethod
-    def extract_table_regions(image, detections: List[Dict[str, Any]], padding: int = 10) -> List[np.ndarray]:
+    def extract_table_regions(image, detections: List[Dict[str, Any]], padding: int = 30) -> List[np.ndarray]:
         """Crop each detected table (with ``padding`` pixels) from ``image``."""
         arr = np.asarray(image)
         h, w = arr.shape[:2]

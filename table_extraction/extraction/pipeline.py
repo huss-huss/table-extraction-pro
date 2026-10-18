@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 PDF_EXTENSIONS = (".pdf",)
+CROP_PADDING_PT = 15.0
 
 
 def fill_cells_from_words(
@@ -69,7 +70,7 @@ class TableExtractionPipeline:
         detection_model: str = "microsoft/table-transformer-detection",
         structure_model: str = "microsoft/table-transformer-structure-recognition",
         confidence_threshold: float = 0.5,
-        dpi: int = 300,
+        dpi: int = 150,
         detector=None,
         structure_recognizer=None,
     ):
@@ -114,7 +115,10 @@ class TableExtractionPipeline:
         logger.info(f"Found {len(detections)} table(s) on page {page_number}")
         if not detections:
             return []
-        regions = self.detector.extract_table_regions(image, detections)
+        # TATR's structure model needs margin around the table; a tight crop
+        # loses the outer rows/columns. Scale the margin with the render DPI.
+        padding = round(CROP_PADDING_PT * self.pdf_processor.scale) if words is not None else 30
+        regions = self.detector.extract_table_regions(image, detections, padding=padding)
         tables = []
         for i, (detection, region) in enumerate(zip(detections, regions)):
             structure = self.structure_recognizer.recognize_structure(region, self.confidence_threshold)

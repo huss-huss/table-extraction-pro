@@ -22,7 +22,7 @@ def _open(pdf_path):
 class PDFProcessor:
     """Handles PDF to image conversion and multi-page processing."""
 
-    def __init__(self, dpi: int = 300):
+    def __init__(self, dpi: int = 150):
         self.dpi = dpi
 
     @property
