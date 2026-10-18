@@ -69,3 +69,11 @@ markers = [
     "slow: long-running test (deselected by default)",
 ]
 addopts = "-m 'not ml and not slow'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["B008", "B905"]  # FastAPI File(...)/Form(...) defaults; zip(strict=) is optional
