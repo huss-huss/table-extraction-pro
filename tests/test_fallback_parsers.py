@@ -88,3 +88,15 @@ def test_tabula_cells_are_strings_without_nan(fixture_pdfs):
             for cell in row:
                 assert isinstance(cell, str)
                 assert cell.lower() != "nan"
+
+
+@needs_camelot
+@needs_tabula
+@pytest.mark.parametrize("name", ["lattice_invoice", "stream_quarterly", "two_tables_one_page", "multipage"])
+def test_comparator_selects_golden_tables(fixture_pdfs, fixture_specs, name):
+    from table_extraction.parsers import ParserComparator
+
+    spec = fixture_specs[name]
+    best = ParserComparator().compare_parsers(str(fixture_pdfs[name]))
+    expected = [(page, rows) for page, _, rows in spec.iter_tables()]
+    assert [(b["page_number"], b["data"]) for b in best] == expected
