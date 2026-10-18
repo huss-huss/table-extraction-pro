@@ -16,6 +16,39 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 PDF_EXTENSIONS = (".pdf",)
 
 
+def fill_cells_from_words(
+    cell_grid: List[List[Dict[str, Any]]],
+    words: List[Dict[str, Any]],
+    crop_offset: List[float],
+    scale: float,
+) -> List[List[str]]:
+    """
+    Assign PDF text-layer words to cells.
+
+    Cell bboxes are in pixels of the cropped table image; ``crop_offset`` is
+    the crop's top-left corner on the page image and ``scale`` is pixels per
+    PDF point. A word goes to the first cell containing its center.
+    """
+    ox, oy = crop_offset
+    boxes = []
+    for r, row in enumerate(cell_grid):
+        for c, cell in enumerate(row):
+            x0, y0, x1, y1 = cell["bbox"]
+            boxes.append((r, c, (x0 + ox) / scale, (y0 + oy) / scale, (x1 + ox) / scale, (y1 + oy) / scale))
+    texts: Dict[tuple, List[tuple]] = {}
+    for word in words:
+        wx0, wy0, wx1, wy1 = word["bbox"]
+        cx, cy = (wx0 + wx1) / 2, (wy0 + wy1) / 2
+        for r, c, x0, y0, x1, y1 in boxes:
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                texts.setdefault((r, c), []).append((round(wy0, 1), wx0, word["text"]))
+                break
+    data = []
+    for r, row in enumerate(cell_grid):
+        data.append([" ".join(t for _, _, t in sorted(texts.get((r, c), []))) for c in range(len(row))])
+    return data
+
+
 class TableExtractionPipeline:
     """
     TATR-based pipeline for table extraction from PDFs and images.
@@ -70,7 +103,13 @@ class TableExtractionPipeline:
         page_number: int,
         source: Dict[str, Any],
         first_table_id: int = 1,
+        words: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
+        """Detect and parse the tables on one page image.
+
+        ``words`` (PDF text layer, bboxes in points) fills the cells when given;
+        pixel coordinates are mapped to points with the pipeline DPI.
+        """
         detections = self.detector.detect_tables(image, self.confidence_threshold)
         logger.info(f"Found {len(detections)} table(s) on page {page_number}")
         if not detections:
@@ -80,7 +119,15 @@ class TableExtractionPipeline:
         for i, (detection, region) in enumerate(zip(detections, regions)):
             structure = self.structure_recognizer.recognize_structure(region, self.confidence_threshold)
             cell_grid = self.structure_recognizer.create_cell_grid(structure)
-            data = self._extract_table_data(region, cell_grid)
+            offset = detection.get("crop_offset", [0, 0])
+            if words is not None:
+                scale = self.pdf_processor.scale
+                detection["page_bbox"] = [v / scale for v in detection["bbox"]]
+                data = fill_cells_from_words(cell_grid, words, offset, scale)
+                text_source = "pdf_text_layer"
+            else:
+                data = self._extract_table_data(region, cell_grid)
+                text_source = "none"
             tables.append(
                 {
                     "table_id": first_table_id + i,
@@ -95,6 +142,7 @@ class TableExtractionPipeline:
                         "confidence": detection["confidence"],
                         "num_rows": structure["num_rows"],
                         "num_columns": structure["num_columns"],
+                        "text_source": text_source,
                     },
                 }
             )
@@ -118,12 +166,15 @@ class TableExtractionPipeline:
         images = self.pdf_processor.pdf_to_images(pdf_path)
         all_tables: List[Dict[str, Any]] = []
         for page_index, image in enumerate(images):
+            words = self.pdf_processor.page_words(pdf_path, page_index)
             all_tables.extend(
                 self._process_page(
                     image,
                     page_index + 1,
                     {"pdf_path": str(pdf_path)},
                     first_table_id=len(all_tables) + 1,
+                    # Scanned pages have no text layer; leave cells empty (no OCR).
+                    words=words or None,
                 )
             )
         logger.info(f"Extracted {len(all_tables)} table(s) from {pdf_path}")
@@ -144,7 +195,7 @@ class TableExtractionPipeline:
     def _extract_table_data(
         self, table_region: np.ndarray, cell_grid: List[List[Dict[str, Any]]]
     ) -> List[List[str]]:
-        """Return the text of each cell (empty when no text source is available)."""
+        """Cell text for images: empty strings (OCR is not implemented)."""
         return [["" for _ in row] for row in cell_grid]
 
     def batch_extract(
