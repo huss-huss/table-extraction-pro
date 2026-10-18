@@ -1,58 +1,43 @@
 #!/usr/bin/env python3
 """
-Simple example of using Table Extraction Pro to extract tables from a PDF.
+Extract tables from a PDF with whatever backends are installed and export them.
+
+    python examples/simple_extraction.py report.pdf [output_dir]
 """
 
 import sys
 from pathlib import Path
 
-# Add the parent directory to the path so we can import our modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from table_extraction.export.exporter import TableExporter
-from table_extraction.extraction.pipeline import TableExtractionPipeline
+from table_extraction import MissingDependencyError, available_backends
+from table_extraction.engine import extract_tables
+from table_extraction.export import TableExporter
 
 
-def main():
-    """Simple extraction example."""
-    # Initialize the pipeline
-    print("Initializing Table Extraction Pipeline...")
-    pipeline = TableExtractionPipeline(confidence_threshold=0.5)
-
-    # Example file path (you would replace this with your actual file)
-    input_file = "example.pdf"  # Replace with your PDF file
-
-    if not Path(input_file).exists():
-        print(f"Example file {input_file} not found.")
-        print("Please place a PDF file named 'example.pdf' in the examples directory.")
-        return
-
+def main() -> int:
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 2
+    pdf = Path(sys.argv[1])
+    out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("output")
+    print(f"Backends: {available_backends()}")
     try:
-        # Extract tables
-        print(f"Extracting tables from: {input_file}")
-        tables = pipeline.extract_from_file(input_file)
-
-        if not tables:
-            print("No tables found in the document.")
-            return
-
-        print(f"Found {len(tables)} table(s)")
-
-        # Export tables
-        output_dir = Path("output")
-        exporter = TableExporter(output_dir)
-
-        results = exporter.export_tables(
-            tables, "extracted_tables", ["csv", "json", "html"], include_metadata=True
+        tables = extract_tables(pdf, engine="auto")
+    except MissingDependencyError as e:
+        print(e)
+        return 1
+    if not tables:
+        print("No tables found.")
+        return 0
+    for t in tables:
+        meta = t["metadata"]
+        print(
+            f"table {t['table_id']} page {t['page_number']}: {len(t['data'])} rows via {meta.get('parser')}"
         )
-
-        print("Export completed:")
-        for format_name, output_path in results.items():
-            print(f"  {format_name.upper()}: {output_path}")
-
-    except Exception as e:
-        print(f"Error: {e}")
+    paths = TableExporter(out).export_tables(tables, pdf.stem, ["csv", "json", "html"])
+    for fmt, path in paths.items():
+        print(f"{fmt}: {path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
