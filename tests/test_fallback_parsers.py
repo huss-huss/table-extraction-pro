@@ -56,3 +56,35 @@ def test_camelot_table_areas_are_valid_camelot_input(fixture_pdfs, fixture_specs
     assert len(areas) == 1
     again = parser.extract_tables(fixture_pdfs["lattice_invoice"], table_areas=areas)
     assert again[0]["data"] == read_golden(fixture_specs["lattice_invoice"], 1, 1)
+
+
+def test_tabula_page_range_parsing():
+    from table_extraction.parsers.tabula_parser import _parse_pages
+
+    assert _parse_pages("all", 3) == [1, 2, 3]
+    assert _parse_pages("1,3", 3) == [1, 3]
+    assert _parse_pages("2-end", 4) == [2, 3, 4]
+    assert _parse_pages("1-2,9", 3) == [1, 2]
+
+
+@needs_tabula
+def test_tabula_reports_real_page_numbers(fixture_pdfs, fixture_specs):
+    from table_extraction.parsers import TabulaParser
+
+    tables = TabulaParser().extract_tables(fixture_pdfs["multipage"], method={"lattice": True})
+    spec = fixture_specs["multipage"]
+    assert [(t["page_number"], t["data"]) for t in tables] == [
+        (1, read_golden(spec, 1, 1)),
+        (2, read_golden(spec, 2, 1)),
+    ]
+
+
+@needs_tabula
+def test_tabula_cells_are_strings_without_nan(fixture_pdfs):
+    from table_extraction.parsers import TabulaParser
+
+    for table in TabulaParser().extract_tables_with_different_methods(fixture_pdfs["stream_quarterly"]):
+        for row in table["data"]:
+            for cell in row:
+                assert isinstance(cell, str)
+                assert cell.lower() != "nan"
