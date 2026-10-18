@@ -6,7 +6,6 @@ import click
 import logging
 from pathlib import Path
 from typing import List
-from tqdm import tqdm
 
 from ..extraction.pipeline import TableExtractionPipeline
 from ..parsers.parser_comparator import ParserComparator
@@ -119,7 +118,7 @@ def batch(input_folder: str, output_folder: str, formats: List[str],
         
         # Process files
         batch_results = {}
-        for file_path in tqdm(files_to_process, desc="Processing files"):
+        for file_path in files_to_process:
             try:
                 logger.info(f"Processing: {file_path}")
                 

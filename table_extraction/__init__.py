@@ -1,20 +1,23 @@
 """
-Table Extraction Pro - Production-oriented table extraction from PDFs and images.
+Table Extraction Pro - table extraction from PDFs and images.
 
-This package provides end-to-end table extraction using Microsoft's Table Transformer (TATR)
-with fallback support for Camelot and Tabula parsers.
+Microsoft's Table Transformer (TATR) handles detection and structure
+recognition (``ml`` extra); Camelot and Tabula act as rule-based fallbacks
+(``fallback`` extra). The base install provides the CLI, API, exporters and
+evaluation without any heavy dependency.
 """
 
-__version__ = "0.1.0"
-__author__ = "Your Name"
-__email__ = "your.email@example.com"
+__version__ = "0.2.0"
 
+from ._deps import MissingDependencyError, available_backends
+from .export.formats import export_to_csv, export_to_html, export_to_json
 from .extraction.pipeline import TableExtractionPipeline
-from .export.formats import export_to_csv, export_to_json, export_to_html
 
 __all__ = [
+    "MissingDependencyError",
     "TableExtractionPipeline",
+    "available_backends",
     "export_to_csv",
-    "export_to_json", 
+    "export_to_json",
     "export_to_html",
 ]

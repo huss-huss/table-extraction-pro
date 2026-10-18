@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "table-extraction-pro"
+version = "0.2.0"
+description = "Table extraction from PDFs and images: TATR detection and structure recognition with Camelot/Tabula fallbacks"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Hussen Mohammed" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing",
+]
+# Base install: CLI, API, exporters, evaluation, PDF rendering. No torch, no Java.
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "Pillow>=10.0",
+    "PyMuPDF>=1.23",
+    "openpyxl>=3.1",
+    "click>=8.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# Table Transformer (TATR) detection + structure recognition.
+ml = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "timm>=0.9",
+]
+# Rule-based fallback parsers. Tabula additionally needs a Java runtime.
+fallback = [
+    "camelot-py>=1.0",
+    "tabula-py>=2.9",
+]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "reportlab>=4.0",
+    "ruff>=0.6",
+]
+all = ["table-extraction-pro[ml,fallback]"]
+
+[project.scripts]
+table-extract = "table_extraction.cli.main:cli"
+
+[project.urls]
+Repository = "https://github.com/huss-huss/table-extraction-pro"
+
+[tool.setuptools.packages.find]
+include = ["table_extraction*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ml: needs torch/transformers and downloads TATR weights (deselected by default)",
+    "slow: long-running test (deselected by default)",
+]
+addopts = "-m 'not ml and not slow'"

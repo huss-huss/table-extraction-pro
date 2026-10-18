@@ -2,11 +2,10 @@
 Camelot parser wrapper for table extraction from PDFs.
 """
 
-import camelot
-import pandas as pd
-from typing import List, Dict, Any, Optional
-from pathlib import Path
 import logging
+from typing import Any, Dict, List, Optional
+
+from .._deps import MissingDependencyError, require
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class CamelotParser:
         try:
             logger.info(f"Extracting tables with Camelot from: {pdf_path}")
             
-            # Extract tables using Camelot
+            camelot = require("camelot", "the Camelot fallback parser")
             tables = camelot.read_pdf(
                 pdf_path,
                 flavor=self.flavor,
@@ -103,6 +102,10 @@ class CamelotParser:
             
             return extracted_tables
             
+        except MissingDependencyError:
+            
+            raise
+            
         except Exception as e:
             logger.error(f"Camelot extraction failed: {e}")
             return []
@@ -134,6 +137,10 @@ class CamelotParser:
                     table["metadata"]["flavor"] = flavor
                 
                 all_results.extend(tables)
+                
+            except MissingDependencyError:
+                
+                raise
                 
             except Exception as e:
                 logger.warning(f"Camelot {flavor} failed: {e}")
@@ -189,7 +196,7 @@ class CamelotParser:
             List of suggested table areas
         """
         try:
-            # Use Camelot to detect table areas
+            camelot = require("camelot", "the Camelot fallback parser")
             tables = camelot.read_pdf(
                 pdf_path,
                 flavor=self.flavor,
@@ -205,6 +212,10 @@ class CamelotParser:
                 areas.append(area)
             
             return areas
+            
+        except MissingDependencyError:
+            
+            raise
             
         except Exception as e:
             logger.error(f"Failed to get table areas: {e}")

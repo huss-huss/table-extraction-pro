@@ -7,6 +7,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from .._deps import require
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,8 +25,10 @@ class TATRTableDetector:
     """Detect table regions on a page image."""
 
     def __init__(self, model_name: str = "microsoft/table-transformer-detection", device: str = None):
-        import torch
-        from transformers import AutoImageProcessor, TableTransformerForObjectDetection
+        torch = require("torch", "TATR table detection")
+        transformers = require("transformers", "TATR table detection")
+        AutoImageProcessor = transformers.AutoImageProcessor
+        TableTransformerForObjectDetection = transformers.TableTransformerForObjectDetection
 
         self._torch = torch
         self.model_name = model_name

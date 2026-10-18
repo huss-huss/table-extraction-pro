@@ -2,11 +2,10 @@
 Tabula parser wrapper for table extraction from PDFs.
 """
 
-import tabula
-import pandas as pd
-from typing import List, Dict, Any, Optional
-from pathlib import Path
 import logging
+from typing import Any, Dict, List, Optional
+
+from .._deps import MissingDependencyError, require
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class TabulaParser:
         try:
             logger.info(f"Extracting tables with Tabula from: {pdf_path}")
             
-            # Extract tables using Tabula
+            tabula = require("tabula", "the Tabula fallback parser")
             dfs = tabula.read_pdf(
                 pdf_path,
                 pages=self.pages,
@@ -106,6 +105,10 @@ class TabulaParser:
             
             return extracted_tables
             
+        except MissingDependencyError:
+            
+            raise
+            
         except Exception as e:
             logger.error(f"Tabula extraction failed: {e}")
             return []
@@ -135,6 +138,7 @@ class TabulaParser:
             try:
                 logger.info(f"Trying Tabula method {i+1}: {method}")
                 
+                tabula = require("tabula", "the Tabula fallback parser")
                 dfs = tabula.read_pdf(
                     pdf_path,
                     pages=self.pages,
@@ -176,6 +180,10 @@ class TabulaParser:
                     }
                     
                     all_results.append(extracted_table)
+                
+            except MissingDependencyError:
+                
+                raise
                 
             except Exception as e:
                 logger.warning(f"Tabula method {i+1} failed: {e}")
@@ -262,7 +270,7 @@ class TabulaParser:
             List of suggested table areas
         """
         try:
-            # Use Tabula to detect table areas
+            tabula = require("tabula", "the Tabula fallback parser")
             dfs = tabula.read_pdf(
                 pdf_path,
                 pages=str(page),
@@ -280,6 +288,10 @@ class TabulaParser:
                 areas.append(area)
             
             return areas
+            
+        except MissingDependencyError:
+            
+            raise
             
         except Exception as e:
             logger.error(f"Failed to get table areas: {e}")

@@ -5,6 +5,7 @@ Table structure recognition with Microsoft's Table Transformer (TATR).
 import logging
 from typing import Any, Dict, List
 
+from .._deps import require
 from .tatr_detector import _to_pil
 
 logger = logging.getLogger(__name__)
@@ -55,8 +56,10 @@ class TATRStructureRecognizer:
         model_name: str = "microsoft/table-transformer-structure-recognition",
         device: str = None,
     ):
-        import torch
-        from transformers import AutoImageProcessor, TableTransformerForObjectDetection
+        torch = require("torch", "TATR structure recognition")
+        transformers = require("transformers", "TATR structure recognition")
+        AutoImageProcessor = transformers.AutoImageProcessor
+        TableTransformerForObjectDetection = transformers.TableTransformerForObjectDetection
 
         self._torch = torch
         self.model_name = model_name

@@ -5,6 +5,7 @@ Parser comparator for evaluating and selecting the best table extraction results
 from typing import List, Dict, Any, Optional
 import logging
 
+from .._deps import MissingDependencyError, is_available
 from .camelot_parser import CamelotParser
 from .tabula_parser import TabulaParser
 
@@ -46,21 +47,31 @@ class ParserComparator:
                 table["metadata"]["parser"] = "tatr"
             all_results.extend(tatr_tables)
         
-        # Try Camelot
-        try:
-            camelot_tables = self.camelot_parser.extract_tables_with_multiple_flavors(pdf_path)
-            all_results.extend(camelot_tables)
-            logger.info(f"Camelot extracted {len(camelot_tables)} table(s)")
-        except Exception as e:
-            logger.warning(f"Camelot extraction failed: {e}")
+        ran_any = False
+        if is_available("camelot"):
+            ran_any = True
+            try:
+                camelot_tables = self.camelot_parser.extract_tables_with_multiple_flavors(pdf_path)
+                all_results.extend(camelot_tables)
+                logger.info(f"Camelot extracted {len(camelot_tables)} table(s)")
+            except Exception as e:
+                logger.warning(f"Camelot extraction failed: {e}")
+        else:
+            logger.warning("Camelot not installed; skipping (pip install 'table-extraction-pro[fallback]')")
         
-        # Try Tabula
-        try:
-            tabula_tables = self.tabula_parser.extract_tables_with_different_methods(pdf_path)
-            all_results.extend(tabula_tables)
-            logger.info(f"Tabula extracted {len(tabula_tables)} table(s)")
-        except Exception as e:
-            logger.warning(f"Tabula extraction failed: {e}")
+        if is_available("tabula"):
+            ran_any = True
+            try:
+                tabula_tables = self.tabula_parser.extract_tables_with_different_methods(pdf_path)
+                all_results.extend(tabula_tables)
+                logger.info(f"Tabula extracted {len(tabula_tables)} table(s)")
+            except Exception as e:
+                logger.warning(f"Tabula extraction failed: {e}")
+        else:
+            logger.warning("Tabula not installed; skipping (pip install 'table-extraction-pro[fallback]')")
+        
+        if not ran_any and not tatr_tables:
+            raise MissingDependencyError("camelot", "fallback", "fallback parsing")
         
         # Compare and select best results
         best_tables = self._select_best_tables(all_results)

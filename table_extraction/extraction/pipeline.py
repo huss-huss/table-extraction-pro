@@ -2,305 +2,176 @@
 Main table extraction pipeline that orchestrates the entire process.
 """
 
-import cv2
-import numpy as np
-from typing import List, Dict, Any, Optional, Union
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
-from ..models.tatr_detector import TATRTableDetector
-from ..models.tatr_structure import TATRStructureRecognizer
+import numpy as np
+
 from .pdf_processor import PDFProcessor
 
 logger = logging.getLogger(__name__)
 
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+PDF_EXTENSIONS = (".pdf",)
+
 
 class TableExtractionPipeline:
     """
-    Main pipeline for table extraction from PDFs and images.
-    
-    This class orchestrates the entire process:
-    1. Convert PDF to images (if needed)
-    2. Detect table regions using TATR
-    3. Recognize table structure using TATR
-    4. Extract table data and export to various formats
+    TATR-based pipeline for table extraction from PDFs and images.
+
+    1. Render PDF pages to images (PyMuPDF).
+    2. Detect table regions (TATR detection model).
+    3. Recognize rows/columns inside each region (TATR structure model).
+    4. Build a cell grid and fill it with text.
+
+    The TATR models are loaded lazily on first use, so constructing a
+    pipeline is cheap and does not require the ``ml`` extra until a TATR
+    extraction is actually run. ``detector`` and ``structure_recognizer``
+    can be injected (used by tests to run without torch).
     """
-    
+
     def __init__(
         self,
         detection_model: str = "microsoft/table-transformer-detection",
         structure_model: str = "microsoft/table-transformer-structure-recognition",
         confidence_threshold: float = 0.5,
-        dpi: int = 300
+        dpi: int = 300,
+        detector=None,
+        structure_recognizer=None,
     ):
-        """
-        Initialize the table extraction pipeline.
-        
-        Args:
-            detection_model: Hugging Face model name for table detection
-            structure_model: Hugging Face model name for structure recognition
-            confidence_threshold: Minimum confidence threshold for detections
-            dpi: DPI for PDF to image conversion
-        """
+        self.detection_model = detection_model
+        self.structure_model = structure_model
         self.confidence_threshold = confidence_threshold
         self.dpi = dpi
-        
-        # Initialize components
-        self.detector = TATRTableDetector(detection_model)
-        self.structure_recognizer = TATRStructureRecognizer(structure_model)
+        self._detector = detector
+        self._structure_recognizer = structure_recognizer
         self.pdf_processor = PDFProcessor(dpi)
-        
-        logger.info("Table extraction pipeline initialized")
-    
-    def extract_from_image(
-        self, 
-        image_path: Union[str, Path]
+
+    @property
+    def detector(self):
+        if self._detector is None:
+            from ..models.tatr_detector import TATRTableDetector
+
+            self._detector = TATRTableDetector(self.detection_model)
+        return self._detector
+
+    @property
+    def structure_recognizer(self):
+        if self._structure_recognizer is None:
+            from ..models.tatr_structure import TATRStructureRecognizer
+
+            self._structure_recognizer = TATRStructureRecognizer(self.structure_model)
+        return self._structure_recognizer
+
+    def _process_page(
+        self,
+        image: np.ndarray,
+        page_number: int,
+        source: Dict[str, Any],
+        first_table_id: int = 1,
     ) -> List[Dict[str, Any]]:
-        """
-        Extract tables from a single image.
-        
-        Args:
-            image_path: Path to image file
-            
-        Returns:
-            List of extracted tables with structure and data
-        """
-        try:
-            logger.info(f"Extracting tables from image: {image_path}")
-            
-            # Load image
-            image = cv2.imread(str(image_path))
-            if image is None:
-                raise ValueError(f"Could not load image: {image_path}")
-            
-            # Detect tables
-            detections = self.detector.detect_tables(image, self.confidence_threshold)
-            logger.info(f"Found {len(detections)} table(s)")
-            
-            if not detections:
-                return []
-            
-            # Extract table regions
-            table_regions = self.detector.extract_table_regions(image, detections)
-            
-            # Process each table
-            extracted_tables = []
-            for i, (detection, table_region) in enumerate(zip(detections, table_regions)):
-                logger.info(f"Processing table {i+1}/{len(table_regions)}")
-                
-                # Recognize structure
-                structure = self.structure_recognizer.recognize_structure(
-                    table_region, self.confidence_threshold
-                )
-                
-                # Create cell grid
-                cell_grid = self.structure_recognizer.create_cell_grid(structure)
-                
-                # Extract text content (placeholder for now)
-                table_data = self._extract_table_data(table_region, cell_grid)
-                
-                extracted_table = {
-                    "table_id": i + 1,
-                    "page_number": 1,
+        detections = self.detector.detect_tables(image, self.confidence_threshold)
+        logger.info(f"Found {len(detections)} table(s) on page {page_number}")
+        if not detections:
+            return []
+        regions = self.detector.extract_table_regions(image, detections)
+        tables = []
+        for i, (detection, region) in enumerate(zip(detections, regions)):
+            structure = self.structure_recognizer.recognize_structure(region, self.confidence_threshold)
+            cell_grid = self.structure_recognizer.create_cell_grid(structure)
+            data = self._extract_table_data(region, cell_grid)
+            tables.append(
+                {
+                    "table_id": first_table_id + i,
+                    "page_number": page_number,
                     "detection": detection,
                     "structure": structure,
                     "cell_grid": cell_grid,
-                    "data": table_data,
+                    "data": data,
                     "metadata": {
-                        "image_path": str(image_path),
+                        **source,
+                        "parser": "tatr",
                         "confidence": detection["confidence"],
                         "num_rows": structure["num_rows"],
-                        "num_columns": structure["num_columns"]
-                    }
+                        "num_columns": structure["num_columns"],
+                    },
                 }
-                
-                extracted_tables.append(extracted_table)
-            
-            logger.info(f"Successfully extracted {len(extracted_tables)} table(s)")
-            return extracted_tables
-            
-        except Exception as e:
-            logger.error(f"Failed to extract tables from image: {e}")
-            raise
-    
-    def extract_from_pdf(
-        self, 
-        pdf_path: Union[str, Path]
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract tables from a PDF document.
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            List of extracted tables with structure and data
-        """
+            )
+        return tables
+
+    def extract_from_image(self, image_path: Union[str, Path]) -> List[Dict[str, Any]]:
+        """Extract tables from a single image file."""
+        from PIL import Image
+
         try:
-            logger.info(f"Extracting tables from PDF: {pdf_path}")
-            
-            # Convert PDF to images
-            images = self.pdf_processor.pdf_to_images(str(pdf_path))
-            logger.info(f"Converted PDF to {len(images)} page(s)")
-            
-            all_tables = []
-            
-            # Process each page
-            for page_num, image in enumerate(images):
-                logger.info(f"Processing page {page_num + 1}/{len(images)}")
-                
-                # Detect tables on this page
-                detections = self.detector.detect_tables(image, self.confidence_threshold)
-                logger.info(f"Found {len(detections)} table(s) on page {page_num + 1}")
-                
-                if not detections:
-                    continue
-                
-                # Extract table regions
-                table_regions = self.detector.extract_table_regions(image, detections)
-                
-                # Process each table on this page
-                for i, (detection, table_region) in enumerate(zip(detections, table_regions)):
-                    logger.info(f"Processing table {i+1} on page {page_num + 1}")
-                    
-                    # Recognize structure
-                    structure = self.structure_recognizer.recognize_structure(
-                        table_region, self.confidence_threshold
-                    )
-                    
-                    # Create cell grid
-                    cell_grid = self.structure_recognizer.create_cell_grid(structure)
-                    
-                    # Extract text content
-                    table_data = self._extract_table_data(table_region, cell_grid)
-                    
-                    extracted_table = {
-                        "table_id": len(all_tables) + 1,
-                        "page_number": page_num + 1,
-                        "detection": detection,
-                        "structure": structure,
-                        "cell_grid": cell_grid,
-                        "data": table_data,
-                        "metadata": {
-                            "pdf_path": str(pdf_path),
-                            "confidence": detection["confidence"],
-                            "num_rows": structure["num_rows"],
-                            "num_columns": structure["num_columns"]
-                        }
-                    }
-                    
-                    all_tables.append(extracted_table)
-            
-            logger.info(f"Successfully extracted {len(all_tables)} table(s) from PDF")
-            return all_tables
-            
-        except Exception as e:
-            logger.error(f"Failed to extract tables from PDF: {e}")
-            raise
-    
-    def extract_from_file(
-        self, 
-        file_path: Union[str, Path]
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract tables from a file (PDF or image).
-        
-        Args:
-            file_path: Path to file
-            
-        Returns:
-            List of extracted tables
-        """
+            with Image.open(image_path) as img:
+                image = np.asarray(img.convert("RGB"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Could not load image: {image_path}") from exc
+        tables = self._process_page(image, 1, {"image_path": str(image_path)})
+        logger.info(f"Extracted {len(tables)} table(s) from {image_path}")
+        return tables
+
+    def extract_from_pdf(self, pdf_path: Union[str, Path]) -> List[Dict[str, Any]]:
+        """Extract tables from every page of a PDF."""
+        images = self.pdf_processor.pdf_to_images(pdf_path)
+        all_tables: List[Dict[str, Any]] = []
+        for page_index, image in enumerate(images):
+            all_tables.extend(
+                self._process_page(
+                    image,
+                    page_index + 1,
+                    {"pdf_path": str(pdf_path)},
+                    first_table_id=len(all_tables) + 1,
+                )
+            )
+        logger.info(f"Extracted {len(all_tables)} table(s) from {pdf_path}")
+        return all_tables
+
+    def extract_from_file(self, file_path: Union[str, Path]) -> List[Dict[str, Any]]:
+        """Extract tables from a PDF or image, dispatching on the extension."""
         file_path = Path(file_path)
-        
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        
-        # Determine file type and process accordingly
-        if file_path.suffix.lower() in ['.pdf']:
+        suffix = file_path.suffix.lower()
+        if suffix in PDF_EXTENSIONS:
             return self.extract_from_pdf(file_path)
-        elif file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']:
+        if suffix in IMAGE_EXTENSIONS:
             return self.extract_from_image(file_path)
-        else:
-            raise ValueError(f"Unsupported file type: {file_path.suffix}")
-    
+        raise ValueError(f"Unsupported file type: {file_path.suffix}")
+
     def _extract_table_data(
-        self, 
-        table_region: np.ndarray, 
-        cell_grid: List[List[Dict[str, Any]]]
+        self, table_region: np.ndarray, cell_grid: List[List[Dict[str, Any]]]
     ) -> List[List[str]]:
-        """
-        Extract text data from table cells using OCR.
-        
-        This is a placeholder implementation. In a production system,
-        you would integrate with an OCR engine like Tesseract or PaddleOCR.
-        
-        Args:
-            table_region: Cropped table image
-            cell_grid: 2D grid of cell information
-            
-        Returns:
-            2D list of cell text content
-        """
-        # Placeholder: return empty strings for now
-        # In production, integrate with OCR engine
-        data = []
-        for row in cell_grid:
-            data_row = []
-            for cell in row:
-                # TODO: Implement OCR extraction
-                data_row.append("")  # Placeholder
-            data.append(data_row)
-        
-        return data
-    
+        """Return the text of each cell (empty when no text source is available)."""
+        return [["" for _ in row] for row in cell_grid]
+
     def batch_extract(
-        self, 
+        self,
         input_folder: Union[str, Path],
         output_folder: Union[str, Path],
-        file_extensions: List[str] = None
+        file_extensions: Optional[List[str]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
+        """Extract tables from every matching file in ``input_folder``.
+
+        A JSON file per input is written to ``output_folder``.
         """
-        Batch extract tables from multiple files.
-        
-        Args:
-            input_folder: Folder containing input files
-            output_folder: Folder to save results
-            file_extensions: List of file extensions to process
-            
-        Returns:
-            Dictionary mapping file paths to extracted tables
-        """
-        if file_extensions is None:
-            file_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff']
-        
+        from ..export.formats import export_to_json
+
+        exts = {e.lower() for e in (file_extensions or PDF_EXTENSIONS + IMAGE_EXTENSIONS)}
         input_folder = Path(input_folder)
         output_folder = Path(output_folder)
         output_folder.mkdir(parents=True, exist_ok=True)
-        
-        results = {}
-        
-        # Find all files to process
-        files_to_process = []
-        for ext in file_extensions:
-            files_to_process.extend(input_folder.glob(f"*{ext}"))
-            files_to_process.extend(input_folder.glob(f"*{ext.upper()}"))
-        
-        logger.info(f"Found {len(files_to_process)} files to process")
-        
-        # Process each file
-        for file_path in files_to_process:
+        files = sorted(p for p in input_folder.iterdir() if p.is_file() and p.suffix.lower() in exts)
+        results: Dict[str, List[Dict[str, Any]]] = {}
+        for file_path in files:
             try:
-                logger.info(f"Processing file: {file_path}")
                 tables = self.extract_from_file(file_path)
-                results[str(file_path)] = tables
-                
-                # Save results (placeholder)
-                output_file = output_folder / f"{file_path.stem}_tables.json"
-                # TODO: Implement result saving
-                
-            except Exception as e:
-                logger.error(f"Failed to process {file_path}: {e}")
-                results[str(file_path)] = []
-        
+            except Exception as exc:
+                logger.error(f"Failed to process {file_path}: {exc}")
+                tables = []
+            results[str(file_path)] = tables
+            if tables:
+                export_to_json(tables, output_folder / f"{file_path.stem}_tables.json")
         return results
