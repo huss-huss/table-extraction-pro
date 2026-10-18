@@ -3,6 +3,7 @@ Export functions for converting extracted tables to various formats.
 """
 
 import csv
+import html as _html
 import json
 import logging
 from pathlib import Path
@@ -24,6 +25,10 @@ def table_confidence(table: Dict[str, Any]) -> Optional[float]:
         if value is not None:
             return float(value)
     return None
+
+
+def _cell_text(cell: Any) -> str:
+    return "" if cell is None else str(cell)
 
 
 def _fmt_confidence(table: Dict[str, Any]) -> str:
@@ -292,7 +297,7 @@ def _generate_html_content(tables: List[Dict[str, Any]], include_metadata: bool,
         for row in table["data"]:
             html += "    <tr>\n"
             for cell in row:
-                html += f"      <td>{cell}</td>\n"
+                html += f"      <td>{_html.escape(_cell_text(cell))}</td>\n"
             html += "    </tr>\n"
         html += "  </tbody>\n"
 

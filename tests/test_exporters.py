@@ -79,3 +79,13 @@ def test_summary_report_with_fallback_tables(tmp_path):
     path = TableExporter(tmp_path).create_summary_report({"a.pdf": [table]})
     summary = json.loads(path.read_text())
     assert summary["file_details"]["a.pdf"]["tables"][0]["confidence"] == 0.8
+
+
+def test_html_export_escapes_cell_text(tmp_path):
+    out = tmp_path / "t.html"
+    data = [["Name", "Note"], ["<script>alert(1)</script>", "a & b < c"]]
+    export_to_html([make_table(data)], out)
+    html = out.read_text()
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "a &amp; b &lt; c" in html

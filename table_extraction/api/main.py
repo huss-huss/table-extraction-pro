@@ -2,6 +2,7 @@
 FastAPI REST API for table extraction.
 """
 
+import html as _html
 import logging
 import shutil
 import tempfile
@@ -14,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .. import __version__
+from ..export.formats import _cell_text
 from ..extraction.pipeline import TableExtractionPipeline
 from ..parsers.parser_comparator import ParserComparator
 
@@ -297,7 +299,7 @@ def _generate_html_table(table: dict) -> str:
     for row in data:
         html += "    <tr>\n"
         for cell in row:
-            html += f"      <td>{cell}</td>\n"
+            html += f"      <td>{_html.escape(_cell_text(cell))}</td>\n"
         html += "    </tr>\n"
     html += "  </tbody>\n"
 
