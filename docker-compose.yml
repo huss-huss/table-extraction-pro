@@ -13,6 +13,10 @@ services:
       TEP_MAX_BATCH_FILES: ${TEP_MAX_BATCH_FILES:-10}
       TEP_DEFAULT_ENGINE: ${TEP_DEFAULT_ENGINE:-auto}
       TEP_CORS_ORIGINS: ${TEP_CORS_ORIGINS:-}
+      # Async jobs live in this one process (and its tmpfs /tmp): keep a single replica.
+      TEP_JOB_WORKERS: ${TEP_JOB_WORKERS:-1}
+      TEP_JOB_MAX_QUEUED: ${TEP_JOB_MAX_QUEUED:-16}
+      TEP_JOB_TTL_SECONDS: ${TEP_JOB_TTL_SECONDS:-3600}
     volumes:
       # TATR weights are downloaded on first use; keep them across restarts.
       - hf-cache:/home/app/.cache/huggingface

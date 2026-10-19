@@ -8,20 +8,32 @@ Configuration (environment variables):
 - ``TEP_CORS_ORIGINS``    comma-separated allowed origins, default none
 - ``TEP_DEFAULT_ENGINE``  auto | tatr | fallback, default auto
 
+Async jobs (``/jobs``), all per-process:
+
+- ``TEP_JOB_WORKERS``          worker threads running jobs, default 1
+- ``TEP_JOB_MAX_QUEUED``       jobs waiting for a worker before ``POST /jobs`` gets 429, default 16
+- ``TEP_JOB_TTL_SECONDS``      how long a finished job and its files are kept, default 3600
+- ``TEP_JOB_CLEANUP_INTERVAL`` seconds between expiry sweeps, default 60
+- ``TEP_JOBS_DIR``             parent directory for per-job temp dirs, default the system temp dir
+
 Errors are returned as ``{"error": {"code": str, "message": str, "details": any}}``.
 """
 
+import io
 import logging
 import os
+import re
 import tempfile
+import zipfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -29,9 +41,10 @@ from .. import __version__
 from .._deps import MissingDependencyError, available_backends
 from ..engine import ENGINES
 from ..engine import extract_tables as run_engine
-from ..export.formats import table_to_csv, table_to_html
+from ..export.formats import export_to_excel, export_to_html, table_to_csv, table_to_html
 from ..extraction.pipeline import TableExtractionPipeline
 from ..parsers.parser_comparator import ParserComparator
+from .jobs import FINISHED, SUCCEEDED, JobManager, QueueFull
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +57,11 @@ class Settings:
     max_batch_files: int
     cors_origins: List[str]
     default_engine: str
+    job_workers: int = 1
+    job_max_queued: int = 16
+    job_ttl_seconds: float = 3600.0
+    job_cleanup_interval: float = 60.0
+    jobs_dir: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -56,6 +74,11 @@ class Settings:
             max_batch_files=int(os.getenv("TEP_MAX_BATCH_FILES", "10")),
             cors_origins=origins,
             default_engine=engine,
+            job_workers=int(os.getenv("TEP_JOB_WORKERS", "1")),
+            job_max_queued=int(os.getenv("TEP_JOB_MAX_QUEUED", "16")),
+            job_ttl_seconds=float(os.getenv("TEP_JOB_TTL_SECONDS", "3600")),
+            job_cleanup_interval=float(os.getenv("TEP_JOB_CLEANUP_INTERVAL", "60")),
+            jobs_dir=os.getenv("TEP_JOBS_DIR") or None,
         )
 
 
@@ -75,11 +98,12 @@ GENERIC_CONTENT_TYPES = {"", "application/octet-stream"}
 
 
 class APIError(Exception):
-    def __init__(self, status: int, code: str, message: str, details: Any = None):
+    def __init__(self, status: int, code: str, message: str, details: Any = None, headers=None):
         self.status = status
         self.code = code
         self.message = message
         self.details = details
+        self.headers = headers
 
 
 def error_body(code: str, message: str, details: Any = None) -> Dict[str, Any]:
@@ -154,14 +178,36 @@ async def _empty_receive() -> Message:
 Extractor = Callable[[Path, str, float], List[Dict[str, Any]]]
 
 
-def create_app(settings: Optional[Settings] = None) -> FastAPI:
+RESULT_FORMATS = ("json", "csv", "html", "xlsx")
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def create_app(settings: Optional[Settings] = None, job_manager: Optional[JobManager] = None) -> FastAPI:
+    """Build the API. ``job_manager`` can be injected (tests use a fake clock)."""
     settings = settings or Settings.from_env()
+    jobs = job_manager or JobManager(
+        workers=settings.job_workers,
+        max_queued=settings.job_max_queued,
+        ttl_seconds=settings.job_ttl_seconds,
+        cleanup_interval=settings.job_cleanup_interval,
+        base_dir=Path(settings.jobs_dir) if settings.jobs_dir else None,
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # Job workers start on the first submission; stop them and remove
+        # every job directory on shutdown (jobs do not survive a restart).
+        jobs.shutdown()
+
     app = FastAPI(
         title="Table Extraction Pro API",
         description="Extract tables from PDFs and images",
         version=__version__,
+        lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.jobs = jobs
     # Models are loaded on first use and reused across requests.
     app.state.pipeline = None
     app.state.comparator = None
@@ -170,14 +216,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
-            allow_methods=["GET", "POST"],
+            allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["*"],
         )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_upload_bytes)
 
     @app.exception_handler(APIError)
     async def _api_error(request: Request, exc: APIError):
-        return JSONResponse(status_code=exc.status, content=error_body(exc.code, exc.message, exc.details))
+        return JSONResponse(
+            status_code=exc.status,
+            content=error_body(exc.code, exc.message, exc.details),
+            headers=exc.headers,
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException):
@@ -215,6 +265,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "endpoints": {
                 "extract": "/extract",
                 "batch": "/extract/batch",
+                "jobs": "/jobs",
                 "health": "/healthz",
                 "docs": "/docs",
             },
@@ -364,6 +415,134 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     {"filename": upload.filename, **error_body("internal_error", "Extraction failed")}
                 )
         return {"total_files": len(files), "engine": engine, "results": results}
+
+    # Async jobs: the upload is validated and stored in the request, then
+    # extracted by the in-process worker pool (see jobs.py).
+    def _job_or_404(job_id: str):
+        job = jobs.get(job_id)
+        if job is None:
+            raise APIError(404, "job_not_found", f"No job with id {job_id!r}")
+        return job
+
+    def _job_status(job_id: str) -> Dict[str, Any]:
+        status = jobs.snapshot(job_id)
+        if status is None:
+            raise APIError(404, "job_not_found", f"No job with id {job_id!r}")
+        status["status_url"] = f"/jobs/{job_id}"
+        status["result_url"] = f"/jobs/{job_id}/result" if status["status"] == SUCCEEDED else None
+        return status
+
+    @app.post("/jobs", status_code=202)
+    def create_job(
+        file: UploadFile = File(...),
+        confidence: float = Form(0.5),
+        engine: Optional[str] = Form(None),
+        use_fallback: bool = Form(False),
+        include_metadata: bool = Form(True),
+        output_format: str = Form("json"),
+        extractor: Extractor = Depends(get_extractor),
+    ):
+        engine = "fallback" if use_fallback else (engine or settings.default_engine)
+        _validate_params(confidence, engine, output_format)
+        try:
+            job = jobs.create(file.filename or "", engine, confidence, include_metadata, output_format)
+        except QueueFull:
+            raise APIError(
+                429,
+                "queue_full",
+                "Too many jobs are waiting; retry later",
+                {"max_queued": jobs.max_queued},
+                headers={"Retry-After": "5"},
+            ) from None
+        try:
+            path = _save_upload(file, job.directory)
+        except BaseException:
+            jobs.discard(job)  # invalid upload: no job, no files
+            raise
+        jobs.submit(job, path, extractor)
+        status = _job_status(job.id)
+        return JSONResponse(status_code=202, content=status, headers={"Location": status["status_url"]})
+
+    @app.get("/jobs/{job_id}")
+    def get_job(job_id: str):
+        return _job_status(job_id)
+
+    @app.get("/jobs/{job_id}/result")
+    def get_job_result(
+        job_id: str,
+        format: Optional[str] = Query(None, description="json, csv, html or xlsx"),
+        table_id: Optional[int] = Query(None, description="csv only: return just this table"),
+    ):
+        job = _job_or_404(job_id)
+        if job.status not in FINISHED:
+            raise APIError(409, "job_not_ready", f"Job is {job.status}", {"status": job.status})
+        if job.status != SUCCEEDED:
+            raise APIError(409, "job_failed", "Job failed; it has no result", job.error)
+        fmt = format or job.output_format
+        if fmt not in RESULT_FORMATS:
+            raise APIError(400, "invalid_parameter", f"format must be one of {', '.join(RESULT_FORMATS)}")
+        try:
+            tables = jobs.load_tables(job)
+            return _job_result(job, tables, fmt, table_id)
+        except FileNotFoundError:
+            # Deleted or expired while this request was being served.
+            raise APIError(404, "job_not_found", f"No job with id {job_id!r}") from None
+
+    def _job_result(job, tables: List[Dict[str, Any]], fmt: str, table_id: Optional[int]):
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(job.filename).stem) or "tables"
+        if fmt == "json":
+            return {
+                "filename": job.filename,
+                "engine": job.engine,
+                "total_tables": len(tables),
+                "format": "json",
+                **_format(tables, "json", job.include_metadata),
+            }
+        if fmt == "csv":
+            if table_id is not None:
+                tables = [t for t in tables if t["table_id"] == table_id]
+                if not tables:
+                    raise APIError(404, "table_not_found", f"No table with table_id {table_id}")
+            if len(tables) <= 1:
+                body = table_to_csv(tables[0]) if tables else ""
+                return _download(body.encode("utf-8"), "text/csv; charset=utf-8", f"{stem}.csv")
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for n, t in enumerate(tables, start=1):
+                    zf.writestr(f"table_{n}_page_{t['page_number']}.csv", table_to_csv(t))
+            return _download(buf.getvalue(), "application/zip", f"{stem}_csv.zip")
+        # html and xlsx are written into the job directory, so they are removed with it.
+        if fmt == "html":
+            content = _export_in_job_dir(job, export_to_html, tables, ".html")
+            return _download(content, "text/html; charset=utf-8", f"{stem}.html")
+        content = _export_in_job_dir(job, export_to_excel, tables, ".xlsx")
+        return _download(content, XLSX_MEDIA_TYPE, f"{stem}.xlsx")
+
+    def _export_in_job_dir(job, exporter, tables, suffix: str) -> bytes:
+        # A unique name per request, so concurrent downloads do not share a file.
+        fd, name = tempfile.mkstemp(prefix="result-", suffix=suffix, dir=job.directory)
+        os.close(fd)
+        out = Path(name)
+        try:
+            exporter(tables, out, job.include_metadata)
+            return out.read_bytes()
+        finally:
+            out.unlink(missing_ok=True)
+
+    def _download(content: bytes, media_type: str, filename: str) -> Response:
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.delete("/jobs/{job_id}")
+    def delete_job(job_id: str):
+        outcome = jobs.delete(job_id)
+        if outcome is None:
+            raise APIError(404, "job_not_found", f"No job with id {job_id!r}")
+        code = 202 if outcome == "cancel_requested" else 200
+        return JSONResponse(status_code=code, content={"id": job_id, "result": outcome})
 
     return app
 
