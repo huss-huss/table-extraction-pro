@@ -27,7 +27,14 @@ jobs:
     # Fast suite with the fallback parsers, against the exact versions in
     # requirements/ci-constraints.txt. TATR model tests (marker `ml`) are
     # deselected by default and need no torch here.
+    # FastAPI is a matrix axis: the pinned version, plus 0.147, which changed
+    # how omitted boolean form fields are read (#6). Everything else stays pinned.
+    name: test (fastapi ${{ matrix.fastapi }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fastapi: ["0.146.0", "0.147.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,12 +46,19 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - run: pip install -c requirements/ci-constraints.txt -e ".[dev,fallback]"
+      - name: Install (constraints, with the matrix FastAPI version)
+        run: |
+          grep -v '^fastapi==' requirements/ci-constraints.txt > "$RUNNER_TEMP/constraints.txt"
+          echo "fastapi==${{ matrix.fastapi }}" >> "$RUNNER_TEMP/constraints.txt"
+          pip install -c "$RUNNER_TEMP/constraints.txt" -e ".[dev,fallback]"
+          python -c "import fastapi; print('fastapi', fastapi.__version__)"
       - run: pytest -q
 
   test-base:
     # Minimum supported Python with the base install only: checks that the
     # package works without optional extras (fallback tests are skipped).
+    # Deliberately unpinned: the constraints target Python 3.12 (numpy 2.5,
+    # pandas 3 need >= 3.12), so this job also catches new dependency releases.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
