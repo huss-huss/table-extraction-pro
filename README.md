@@ -164,6 +164,10 @@ curl -s -F "file=@report.pdf;type=application/pdf" -F engine=fallback \
 | `GET /healthz` | liveness, version, installed backends |
 | `POST /extract` | multipart `file`; form fields `engine`, `confidence`, `output_format` (`json`, `csv`, `html`), `include_metadata` |
 | `POST /extract/batch` | multipart `files` (up to `TEP_MAX_BATCH_FILES`); per-file results or errors |
+| `POST /jobs` | same upload and form fields as `/extract`; returns 202 with a job id and status URL |
+| `GET /jobs/{id}` | status (`queued`, `running`, `succeeded`, `failed`), progress, timestamps, error |
+| `GET /jobs/{id}/result` | `?format=json\|csv\|html\|xlsx` (default: the submitted `output_format`); 409 until the job succeeded |
+| `DELETE /jobs/{id}` | cancel a queued job, cancel a running one (output discarded), or delete a finished one |
 
 Request handling:
 
@@ -179,6 +183,97 @@ Request handling:
   backend returns 503 `backend_unavailable` with the extra to install.
 - CORS is off unless `TEP_CORS_ORIGINS` is set. `TEP_DEFAULT_ENGINE` selects
   the engine used when a request does not specify one.
+
+### Async jobs
+
+For large documents, submit a job instead of holding a request open. The
+upload is validated exactly like `/extract` (same 400/413/415 errors) before
+the job is accepted. A real session against the fallback engine with the
+two-page fixture PDF (`tests/fixtures/generate.py`, saved as `report.pdf`):
+
+```bash
+curl -s -i -F "file=@report.pdf;type=application/pdf" -F engine=fallback \
+     -F include_metadata=false localhost:8000/jobs
+# HTTP/1.1 202 Accepted
+# location: /jobs/b0d18126542c4ec7accdc2dd40002e3e
+# {"id":"b0d18126542c4ec7accdc2dd40002e3e","status":"queued","filename":"report.pdf","engine":"fallback",
+#  "progress":{"pages_done":0,"pages_total":null},"total_tables":null,"created_at":"2026-10-19T11:16:05.731286Z",
+#  "started_at":null,"finished_at":null,"expires_at":null,"cancel_requested":false,"error":null,
+#  "status_url":"/jobs/b0d18126542c4ec7accdc2dd40002e3e","result_url":null}
+
+curl -s localhost:8000/jobs/$ID/result
+# {"error":{"code":"job_not_ready","message":"Job is running","details":{"status":"running"}}}   (HTTP 409)
+
+curl -s localhost:8000/jobs/$ID
+# {"id":"b0d1...","status":"succeeded",...,"progress":{"pages_done":2,"pages_total":2},"total_tables":2,
+#  "started_at":"2026-10-19T11:16:05.731894Z","finished_at":"2026-10-19T11:16:08.262122Z",
+#  "expires_at":"2026-10-19T11:26:08.262122Z",...,"result_url":"/jobs/b0d1.../result"}
+
+curl -s "localhost:8000/jobs/$ID/result?format=json"
+# {"filename":"report.pdf","engine":"fallback","total_tables":2,"format":"json",
+#  "tables":[{"table_id":1,"page_number":1,"data":[["SKU","Description","On hand","Reorder"],...]},...]}
+
+curl -s "localhost:8000/jobs/$ID/result?format=csv" -o tables.zip   # several tables: zip of CSVs
+curl -s "localhost:8000/jobs/$ID/result?format=csv&table_id=1"      # one table as text/csv
+# SKU,Description,On hand,Reorder
+# A-100,Bolt M6,520,200
+# ...
+curl -s "localhost:8000/jobs/$ID/result?format=xlsx" -o report.xlsx
+curl -s "localhost:8000/jobs/$ID/result?format=html" -o report.html
+
+curl -s -X DELETE localhost:8000/jobs/$ID
+# {"id":"b0d18126542c4ec7accdc2dd40002e3e","result":"deleted"}
+```
+
+With `TEP_JOB_MAX_QUEUED=1`, a third submission while one job runs and one
+waits gets `429 {"error":{"code":"queue_full",...,"details":{"max_queued":1}}}`
+with `Retry-After: 5`. Deleting the waiting job returns `"result":"cancelled"`;
+deleting the running one returns 202 `"result":"cancel_requested"`, and the
+job disappears (404) once its extraction returns.
+
+How jobs work:
+
+- `TEP_JOB_WORKERS` (default 1) threads in the API process run jobs. At most
+  `TEP_JOB_MAX_QUEUED` (default 16) jobs may wait for a worker; beyond that
+  `POST /jobs` returns 429. Running jobs do not count against the limit.
+  The default of one worker is deliberate: all jobs share one pipeline
+  instance, and extraction is CPU-bound.
+- Each job gets its own temporary directory under `TEP_JOBS_DIR` (default:
+  the system temp dir). It holds the upload until extraction finishes, then
+  `tables.json`. CSV, HTML and Excel outputs are rendered from it per
+  request. Job metadata (status, timestamps, errors) is kept in memory.
+- Finished jobs expire `TEP_JOB_TTL_SECONDS` (default 3600) after they
+  finish. A janitor thread removes expired jobs every
+  `TEP_JOB_CLEANUP_INTERVAL` seconds (default 60), and an expired job is
+  already 404 before the sweep runs.
+- Files are always removed: the upload as soon as extraction returns, the
+  whole directory on failure (only the error record stays until expiry), on
+  cancellation, on delete, on expiry, and for every job on shutdown. A
+  rejected submission (invalid upload, full queue) writes nothing.
+- Progress is coarse: `pages_total` is the PDF page count (1 for an image)
+  once the job starts, and `pages_done` jumps to it on success. The engines
+  have no per-page callback yet.
+- A running extraction cannot be interrupted. Cancelling it discards its
+  output and files when it returns; until then it still occupies a worker.
+- Worker threads start on the first submission, so the sync endpoints and
+  imports start none.
+
+**Jobs are per-process.** They are lost when the process restarts, and they
+are not shared between replicas: a status poll that lands on another replica
+gets a 404. Run a single API process (one uvicorn worker, one container) if
+you use `/jobs`, or route each client to the same instance.
+
+A Redis/RQ-backed version would change:
+
+- Job state in Redis instead of a dict, so any replica can answer status and
+  delete requests and jobs survive an API restart; RQ's job status and
+  `result_ttl`/`failure_ttl` would replace the TTL and janitor code.
+- Extraction in separate RQ worker processes, scaled independently of the
+  API, with real cancellation (`send_stop_job_command`) of running jobs.
+- Uploads and results on shared storage (an object store or a shared
+  volume) instead of a local temp dir, with expiry handled by a lifecycle
+  rule or by the worker; the queue limit becomes a check on queue length.
+- One more service to run and monitor, which is why this version avoids it.
 
 ## Docker
 
@@ -276,8 +371,10 @@ on Python 3.10 with the base install.
   fixture set.
 - Benchmark coverage is 6 synthetic tables. There is no evaluation on a
   public dataset such as PubTables-1M or FinTabNet yet.
-- The API runs extraction synchronously in a worker thread per request, with
-  no job queue. Large documents hold a worker for the whole extraction.
+- `/extract` runs extraction synchronously in a worker thread per request.
+  `/jobs` frees the request, but its queue lives in the API process: jobs are
+  lost on restart, not shared across replicas, and a running extraction
+  cannot be stopped mid-way. Job progress is not reported per page.
 - TATR runs on CPU unless CUDA is available. GPU paths are untested.
 
 ## Roadmap
@@ -287,7 +384,9 @@ on Python 3.10 with the base install.
   and GriTS-Loc.
 - Benchmark on a public dataset subset, then tune the comparator weights on
   it instead of setting them by hand.
-- Async job API (submit, poll, download) for large documents.
+- Optional Redis/RQ backend for `/jobs` (shared state across replicas,
+  separate worker processes, cancellation of running jobs).
+- Per-page progress callbacks from the engines for job status.
 - Optional `jpype1` integration to keep Tabula's JVM in-process.
 
 ## License
