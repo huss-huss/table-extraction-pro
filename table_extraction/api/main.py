@@ -175,6 +175,39 @@ async def _empty_receive() -> Message:
     return {"type": "http.disconnect"}
 
 
+# Boolean form fields are declared as optional strings and parsed here rather
+# than as ``bool = Form(default)``: FastAPI 0.147 treats a missing ``bool`` form
+# field as an unchecked HTML checkbox and reads it as False, ignoring the
+# declared default. Parsing ourselves applies the documented default on every
+# FastAPI version. The accepted spellings match pydantic's bool parsing.
+_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "f", "no", "n", "off"})
+USE_FALLBACK_DOC = "Force the rule-based fallback parsers: true/false, 1/0, yes/no, on/off. Default false."
+INCLUDE_METADATA_DOC = (
+    "Include bounding boxes, confidence and other metadata (json only): "
+    "true/false, 1/0, yes/no, on/off. Default true."
+)
+
+
+def parse_form_bool(value: Optional[str], name: str, default: bool) -> bool:
+    """Parse a boolean form field; a missing or empty field means ``default``."""
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if not normalized:
+        return default
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    raise APIError(
+        422,
+        "validation_error",
+        "Invalid request",
+        [{"loc": ["body", name], "msg": "Input should be a valid boolean, unable to interpret input"}],
+    )
+
+
 Extractor = Callable[[Path, str, float], List[Dict[str, Any]]]
 
 
@@ -364,11 +397,13 @@ def create_app(settings: Optional[Settings] = None, job_manager: Optional[JobMan
         file: UploadFile = File(...),
         confidence: float = Form(0.5),
         engine: Optional[str] = Form(None),
-        use_fallback: bool = Form(False),
-        include_metadata: bool = Form(True),
+        use_fallback: Optional[str] = Form(None, description=USE_FALLBACK_DOC),
+        include_metadata: Optional[str] = Form(None, description=INCLUDE_METADATA_DOC),
         output_format: str = Form("json"),
         extractor: Extractor = Depends(get_extractor),
     ):
+        use_fallback = parse_form_bool(use_fallback, "use_fallback", False)
+        include_metadata = parse_form_bool(include_metadata, "include_metadata", True)
         engine = "fallback" if use_fallback else (engine or settings.default_engine)
         _validate_params(confidence, engine, output_format)
         tables = _run(file, extractor, engine, confidence)
@@ -385,11 +420,13 @@ def create_app(settings: Optional[Settings] = None, job_manager: Optional[JobMan
         files: List[UploadFile] = File(...),
         confidence: float = Form(0.5),
         engine: Optional[str] = Form(None),
-        use_fallback: bool = Form(False),
-        include_metadata: bool = Form(True),
+        use_fallback: Optional[str] = Form(None, description=USE_FALLBACK_DOC),
+        include_metadata: Optional[str] = Form(None, description=INCLUDE_METADATA_DOC),
         output_format: str = Form("json"),
         extractor: Extractor = Depends(get_extractor),
     ):
+        use_fallback = parse_form_bool(use_fallback, "use_fallback", False)
+        include_metadata = parse_form_bool(include_metadata, "include_metadata", True)
         engine = "fallback" if use_fallback else (engine or settings.default_engine)
         _validate_params(confidence, engine, output_format)
         if len(files) > settings.max_batch_files:
@@ -437,11 +474,13 @@ def create_app(settings: Optional[Settings] = None, job_manager: Optional[JobMan
         file: UploadFile = File(...),
         confidence: float = Form(0.5),
         engine: Optional[str] = Form(None),
-        use_fallback: bool = Form(False),
-        include_metadata: bool = Form(True),
+        use_fallback: Optional[str] = Form(None, description=USE_FALLBACK_DOC),
+        include_metadata: Optional[str] = Form(None, description=INCLUDE_METADATA_DOC),
         output_format: str = Form("json"),
         extractor: Extractor = Depends(get_extractor),
     ):
+        use_fallback = parse_form_bool(use_fallback, "use_fallback", False)
+        include_metadata = parse_form_bool(include_metadata, "include_metadata", True)
         engine = "fallback" if use_fallback else (engine or settings.default_engine)
         _validate_params(confidence, engine, output_format)
         try:

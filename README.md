@@ -162,7 +162,7 @@ curl -s -F "file=@report.pdf;type=application/pdf" -F engine=fallback \
 | Endpoint | Description |
 |---|---|
 | `GET /healthz` | liveness, version, installed backends |
-| `POST /extract` | multipart `file`; form fields `engine`, `confidence`, `output_format` (`json`, `csv`, `html`), `include_metadata` |
+| `POST /extract` | multipart `file`; form fields `engine`, `confidence`, `output_format` (`json`, `csv`, `html`), `include_metadata` (default `true`), `use_fallback` (default `false`) |
 | `POST /extract/batch` | multipart `files` (up to `TEP_MAX_BATCH_FILES`); per-file results or errors |
 | `POST /jobs` | same upload and form fields as `/extract`; returns 202 with a job id and status URL |
 | `GET /jobs/{id}` | status (`queued`, `running`, `succeeded`, `failed`), progress, timestamps, error |
@@ -181,6 +181,10 @@ Request handling:
 - All errors use the same shape:
   `{"error": {"code": "...", "message": "...", "details": ...}}`. A missing
   backend returns 503 `backend_unavailable` with the extra to install.
+- Boolean form fields (`include_metadata`, `use_fallback`) accept
+  `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`, case-insensitive. An
+  omitted or empty field takes the default; anything else is a 422
+  `validation_error`.
 - CORS is off unless `TEP_CORS_ORIGINS` is set. `TEP_DEFAULT_ENGINE` selects
   the engine used when a request does not specify one.
 

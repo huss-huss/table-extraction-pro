@@ -134,6 +134,25 @@ def test_job_lifecycle(tmp_path):
     assert job_dirs(tmp_path) == []
 
 
+def test_job_boolean_form_fields_default_when_omitted(tmp_path):
+    # Regression for #6: an omitted include_metadata must mean true, use_fallback false.
+    fake = FakeExtractor()
+    client, manager = make_client(tmp_path, fake)
+    job_id = submit(client).json()["id"]
+    wait_for(client, job_id, "succeeded")
+    assert manager.get(job_id).include_metadata is True
+    body = client.get(f"/jobs/{job_id}/result").json()
+    assert body["engine"] == "auto"
+    assert body["tables"] == [make_table(INVOICE)]
+
+
+def test_job_invalid_boolean_form_field_creates_no_job(tmp_path):
+    client, _ = make_client(tmp_path, FakeExtractor())
+    r = submit(client, include_metadata="maybe")
+    assert r.status_code == 422 and r.json()["error"]["code"] == "validation_error"
+    assert job_dirs(tmp_path) == []
+
+
 def test_progress_reports_pdf_pages(tmp_path, fixture_pdfs):
     client, _ = make_client(tmp_path, FakeExtractor())
     job_id = submit(client, content=fixture_pdfs["multipage"].read_bytes()).json()["id"]
@@ -144,7 +163,7 @@ def test_progress_reports_pdf_pages(tmp_path, fixture_pdfs):
 def test_result_formats(tmp_path):
     tables = [make_table(INVOICE), make_table([["<b>x</b>", "y"]], table_id=2, page=2)]
     client, _ = make_client(tmp_path, FakeExtractor(tables))
-    job_id = submit(client, name="Q3 report.pdf", output_format="csv", include_metadata="true").json()["id"]
+    job_id = submit(client, name="Q3 report.pdf", output_format="csv").json()["id"]
     wait_for(client, job_id, "succeeded")
     url = f"/jobs/{job_id}/result"
 
