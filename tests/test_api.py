@@ -87,6 +87,56 @@ def test_use_fallback_alias():
     assert fake.calls[0]["engine"] == "fallback"
 
 
+def test_boolean_form_fields_default_when_omitted():
+    # Regression for #6: FastAPI 0.147 reads a missing ``bool = Form(True)`` as False.
+    for data in ({}, {"output_format": "json"}, {"include_metadata": "", "use_fallback": ""}):
+        fake = FakeExtractor()
+        r = upload(make_client(fake), **data)
+        assert r.status_code == 200, r.text
+        assert r.json()["tables"] == [make_table(INVOICE)]  # include_metadata defaults to true
+        assert fake.calls[0]["engine"] == "auto"  # use_fallback defaults to false
+
+
+def test_batch_boolean_form_fields_default_when_omitted():
+    fake = FakeExtractor()
+    files = [("files", ("a.pdf", PDF_BYTES, "application/pdf"))]
+    body = make_client(fake).post("/extract/batch", files=files).json()
+    assert body["engine"] == "auto"
+    assert body["results"][0]["tables"] == [make_table(INVOICE)]
+
+    body = make_client(fake).post("/extract/batch", files=files, data={"include_metadata": "no"}).json()
+    assert body["results"][0]["tables"] == [{"table_id": 1, "page_number": 1, "data": INVOICE}]
+
+
+@pytest.mark.parametrize("value", ["true", "True", "1", "yes", "y", "on", "t", " TRUE "])
+def test_boolean_form_fields_accept_true_spellings(value):
+    fake = FakeExtractor()
+    r = upload(make_client(fake), include_metadata=value, use_fallback=value)
+    assert r.status_code == 200, r.text
+    assert "metadata" in r.json()["tables"][0]
+    assert fake.calls[0]["engine"] == "fallback"
+
+
+@pytest.mark.parametrize("value", ["false", "False", "0", "no", "n", "off", "f"])
+def test_boolean_form_fields_accept_false_spellings(value):
+    fake = FakeExtractor()
+    r = upload(make_client(fake), include_metadata=value, use_fallback=value)
+    assert r.status_code == 200, r.text
+    assert r.json()["tables"] == [{"table_id": 1, "page_number": 1, "data": INVOICE}]
+    assert fake.calls[0]["engine"] == "auto"
+
+
+@pytest.mark.parametrize("field", ["include_metadata", "use_fallback"])
+def test_invalid_boolean_form_field_is_a_validation_error(field):
+    fake = FakeExtractor()
+    r = upload(make_client(fake), **{field: "maybe"})
+    assert r.status_code == 422
+    error = r.json()["error"]
+    assert error["code"] == "validation_error"
+    assert error["details"][0]["loc"] == ["body", field]
+    assert fake.calls == []
+
+
 @pytest.mark.parametrize(
     "name,content,ctype",
     [
