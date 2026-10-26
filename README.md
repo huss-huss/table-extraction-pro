@@ -25,31 +25,31 @@ evaluation and benchmark parts of this repository are for.
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    IN[/"PDF or image"/] --> CLI["CLI (click)<br/>extract · quick · batch"]
+    IN --> API["REST API (FastAPI)<br/>/extract · /extract/batch"]
+    IN --> JOBS["Async job API<br/>/jobs · JobManager worker threads"]
+    CLI --> ENG{"engine.extract_tables<br/>auto · tatr · fallback"}
+    API --> ENG
+    JOBS --> ENG
+    ENG -->|"tatr, auto"| TATR["TableExtractionPipeline<br/>PyMuPDF render → TATR detection<br/>→ TATR structure → text layer"]
+    ENG -->|"fallback, auto (PDF only)"| CAM["CamelotParser<br/>lattice + stream"]
+    ENG -->|"fallback, auto (PDF only)"| TAB["TabulaParser<br/>lattice + stream"]
+    TATR -->|"auto on PDFs"| CMP["ParserComparator<br/>group by page + IoU / text overlap<br/>score → keep best per table"]
+    CAM --> CMP
+    TAB --> CMP
+    TATR -->|"tatr, or images"| EXP["TableExporter<br/>CSV · JSON · HTML · Excel"]
+    CMP --> EXP
+    CMP -. "scored by benchmarks/run_benchmark.py" .-> EVAL["table_extraction.evaluation<br/>GriTS-Con · GriTS-Top · cell accuracy"]
 ```
-                         PDF / image
-                              |
-            +-----------------+-------------------+
-            |                                     |
-   TATR pipeline  [ml extra]              Fallback parsers  [fallback extra]
-   PyMuPDF render (150 dpi)               (PDF only)
-   -> detection model: table boxes        Camelot lattice + stream
-   -> crop with 15 pt margin              Tabula lattice + stream (Java)
-   -> structure model: rows, columns      each: cells -> strings, page bbox
-   -> cell grid = rows x columns                 in PDF points
-   -> cells filled from the PDF text layer
-            |                                     |
-            +----------------+--------------------+
-                             |
-                    ParserComparator
-          group candidates: same page and (bbox IoU >= 0.5
-                            or cell-text overlap >= 0.6)
-          score: confidence, completeness, row consistency,
-                 size, parser tie-break -> keep best per group
-                             |
-                    TableExporter: CSV / JSON / HTML / Excel
-                             |
-              CLI (click)            REST API (FastAPI)
-```
+
+Every entry point goes through `engine.extract_tables`, so the CLI, the
+synchronous endpoints and the async job API share one code path. The `auto`
+engine sends TATR output and the Camelot and Tabula candidates to
+`ParserComparator`, which keeps one copy per table; images go through TATR
+only. The evaluation module is not part of extraction: the benchmark uses it
+to score each backend against the fixture ground truth.
 
 Package layout:
 
